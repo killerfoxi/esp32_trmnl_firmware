@@ -31,7 +31,7 @@ use embassy_executor::Spawner;
 use embassy_time::{Delay, Duration, Timer, WithTimeout};
 
 use esp_backtrace as _;
-use static_cell::{make_static, StaticCell};
+use static_cell::StaticCell;
 
 extern crate alloc;
 
@@ -80,7 +80,6 @@ struct DisplayPins {
 }
 
 struct RudoPeripherals {
-    lpwr: peripherals::LPWR,
     spi: peripherals::SPI2,
     rmt: peripherals::RMT,
     timer0: TimerGroup<TIMG0>,
@@ -96,7 +95,6 @@ impl RudoPeripherals {
     fn init(peripherals: Peripherals) -> (Self, peripherals::SYSTIMER) {
         (
             Self {
-                lpwr: peripherals.LPWR,
                 spi: peripherals.SPI2,
                 rmt: peripherals.RMT,
                 timer0: TimerGroup::new(peripherals.TIMG0),
@@ -199,7 +197,7 @@ async fn status_led_runner(rmt_channel: ChannelCreator<Blocking, 0>, led_pin: An
 
 static IMG_BUF: StaticCell<[u8; 32 << 10]> = StaticCell::new();
 
-async fn main_fallible(mut rudo: Rudo, spawner: Spawner) -> Result<(), Error> {
+async fn main_fallible(mut rudo: Rudo, _spawner: Spawner) -> Result<(), Error> {
     use crate::trmnl::TrmnlClient;
     use embedded_graphics::Drawable;
     STATUS_LED.signal(status::Status::Working);
@@ -215,10 +213,21 @@ async fn main_fallible(mut rudo: Rudo, spawner: Spawner) -> Result<(), Error> {
             Ok(img) => {
                 rudo.screen.clear();
                 embedded_graphics::image::Image::new(&img, Point::zero())
-                    .draw(&mut rudo.screen.display().color_converted());
-                rudo.screen.update();
+                    .draw(&mut rudo.screen.display().color_converted())
+                    .unwrap();
+                if let Err(e) = rudo.screen.update() {
+                    error!("Displa update failed: {e:?}");
+                    STATUS_LED.signal(status::Status::Failure);
+                    Timer::after_secs(2).await;
+                    continue;
+                }
             }
-            Err(e) => error!("Failed to fetch and display image: {e:?}"),
+            Err(e) => {
+                error!("Failed to fetch and display image: {e:?}");
+                STATUS_LED.signal(status::Status::Failure);
+                Timer::after_secs(25).await;
+                continue;
+            }
         }
         STATUS_LED.signal(status::Status::Sleeping);
         Timer::after_secs(embed_config_value!("rudo.refresh_interval_secs") as u64).await

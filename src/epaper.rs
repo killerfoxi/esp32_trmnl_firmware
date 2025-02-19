@@ -8,7 +8,6 @@ use embedded_hal::{
 };
 use embedded_hal_bus::spi::ExclusiveDevice;
 use epd_waveshare::{
-    color::Color,
     epd7in5_v2::{Display7in5, Epd7in5},
     prelude::WaveshareDisplay,
 };
