@@ -7,7 +7,9 @@ version = "0.1.0"
 path = "build_cfg.toml"
 
 [[bin]]
-name = "esp32"
+name = "atrmnl"
+test = false
+path = "./src/main.rs"
 
 [dependencies]
 embassy-net = { version = "0.6.0", features = [
