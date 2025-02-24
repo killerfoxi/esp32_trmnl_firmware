@@ -15,6 +15,7 @@ use rand_core::RngCore;
 use reqwless::{
     client::{HttpClient, TlsConfig, TlsVerify},
     request::{Method, RequestBuilder},
+    response::StatusCode,
 };
 
 #[derive(Debug)]
@@ -22,6 +23,7 @@ pub enum Error {
     ConnectionReset,
     RequestTimedOut,
     Http,
+    StatusCode(StatusCode),
 }
 
 impl From<tcp::Error> for Error {
@@ -48,6 +50,7 @@ impl Display for Error {
             Error::ConnectionReset => write!(f, "connection was reset"),
             Error::Http => write!(f, "http request failed"),
             Error::RequestTimedOut => write!(f, "endpoint took to long to respond"),
+            Error::StatusCode(code) => write!(f, "http request has status code of: {code:?}"),
         }
     }
 }
@@ -116,6 +119,9 @@ impl ClientTrait for Client<'_> {
             }
             Err(_) => return Err(Error::RequestTimedOut),
         };
+        if !resp.status.is_successful() {
+            return Err(Error::StatusCode(resp.status));
+        }
         let buf = resp
             .body()
             .read_to_end()
