@@ -1,12 +1,12 @@
 use core::fmt::Display;
 
 use embassy_net::{
+    Stack,
     dns::DnsSocket,
     tcp::{
         self,
         client::{TcpClient, TcpClientState},
     },
-    Stack,
 };
 use embassy_time::{Duration, WithTimeout};
 use esp_hal::rng::Rng;
@@ -65,8 +65,8 @@ pub struct Client<'stack> {
     stack: Stack<'stack>,
     rng: Rng,
     tcp_client_state: TcpClientState<1, 4096, 4096>,
-    rx_buf: [u8; 16 << 10],
-    tx_buf: [u8; 16 << 10],
+    rx_buf: [u8; 18 << 10],
+    tx_buf: [u8; 18 << 10],
 }
 
 impl<'stack> Client<'stack> {
@@ -75,8 +75,8 @@ impl<'stack> Client<'stack> {
             stack,
             rng,
             tcp_client_state: TcpClientState::new(),
-            rx_buf: [0; 16 << 10],
-            tx_buf: [0; 16 << 10],
+            rx_buf: [0; 18 << 10],
+            tx_buf: [0; 18 << 10],
         }
     }
 }
@@ -110,7 +110,7 @@ impl ClientTrait for Client<'_> {
             .headers(headers);
         let resp = match req.send(buf).with_timeout(Duration::from_secs(45)).await {
             Ok(Ok(resp)) => resp,
-            Ok(e) => {
+            Ok(Err(e)) => {
                 error!("http request failed with: {e:?}");
                 return Err(Error::Http);
             }

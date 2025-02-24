@@ -2,11 +2,11 @@
 runner = "espflash flash --monitor --chip esp32c6"
 
 [build]
-rustflags = [
-  "-C", "force-frame-pointers",
-]
-
+rustflags = ["-C", "force-frame-pointers"]
 target = "riscv32imac-unknown-none-elf"
+
+[env]
+ESP_LOG = "info"
 
 [unstable]
 build-std = ["alloc", "core"]

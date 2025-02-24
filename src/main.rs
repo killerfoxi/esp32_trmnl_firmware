@@ -2,6 +2,8 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_assoc_type)]
+#![warn(tail_expr_drop_order)]
+#![warn(clippy::large_futures)]
 
 mod epaper;
 mod http;
@@ -16,13 +18,13 @@ use embedded_config::prelude::*;
 use embedded_graphics::prelude::{DrawTargetExt, Point};
 use epaper::Display;
 use esp_hal::gpio::{AnyPin, Input, Level, Output, Pin, Pull};
-use esp_hal::peripherals::{self, Peripherals, TIMG0};
+use esp_hal::peripherals::{self, TIMG0};
 use esp_hal::rmt::{ChannelCreator, Rmt};
 use esp_hal::spi::master::Spi;
 use esp_hal::time::RateExtU32;
 use esp_hal::timer::timg::TimerGroup;
+use esp_hal::{Blocking, reset};
 use esp_hal::{clock::CpuClock, rng::Rng};
-use esp_hal::{reset, Blocking};
 
 use esp_hal_smartled::smartLedBuffer;
 use log::{error, info};
@@ -31,7 +33,7 @@ use embassy_executor::Spawner;
 use embassy_time::{Delay, Duration, Timer, WithTimeout};
 
 use esp_backtrace as _;
-use static_cell::StaticCell;
+use static_cell::ConstStaticCell;
 
 extern crate alloc;
 
@@ -39,11 +41,11 @@ const WIFI_SSD: &str = embed_config_value!("wifi.ssid");
 const WIFI_PWD: &str = embed_config_value!("wifi.password");
 
 static STATUS_LED: Signal<CriticalSectionRawMutex, status::Status> = Signal::new();
+static FATAL_ERROR: Signal<CriticalSectionRawMutex, Error> = Signal::new();
 
 #[derive(Debug)]
 enum Error {
     Boot,
-    Operation,
 }
 
 impl From<BootError> for Error {
@@ -92,7 +94,8 @@ struct RudoPeripherals {
 }
 
 impl RudoPeripherals {
-    fn init(peripherals: Peripherals) -> (Self, peripherals::SYSTIMER) {
+    fn init() -> (Self, peripherals::SYSTIMER) {
+        let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
         (
             Self {
                 spi: peripherals.SPI2,
@@ -195,15 +198,16 @@ async fn status_led_runner(rmt_channel: ChannelCreator<Blocking, 0>, led_pin: An
     }
 }
 
-static IMG_BUF: StaticCell<[u8; 32 << 10]> = StaticCell::new();
+static IMG_BUF: ConstStaticCell<[u8; 56 << 10]> = ConstStaticCell::new([0; 56 << 10]);
 
-async fn main_fallible(mut rudo: Rudo, _spawner: Spawner) -> Result<(), Error> {
+#[embassy_executor::task]
+async fn update_screen(mut rudo: Rudo) -> ! {
     use crate::trmnl::TrmnlClient;
     use embedded_graphics::Drawable;
     STATUS_LED.signal(status::Status::Working);
 
     let mut client = http::Client::new(rudo.stack, rudo.rng);
-    let buf = IMG_BUF.init([0; 32 << 10]);
+    let buf = IMG_BUF.take();
 
     info!("Ready.");
     loop {
@@ -216,7 +220,7 @@ async fn main_fallible(mut rudo: Rudo, _spawner: Spawner) -> Result<(), Error> {
                     .draw(&mut rudo.screen.display().color_converted())
                     .unwrap();
                 if let Err(e) = rudo.screen.update() {
-                    error!("Displa update failed: {e:?}");
+                    error!("Display update failed: {e:?}");
                     STATUS_LED.signal(status::Status::Failure);
                     Timer::after_secs(2).await;
                     continue;
@@ -238,10 +242,9 @@ async fn main_fallible(mut rudo: Rudo, _spawner: Spawner) -> Result<(), Error> {
 async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
 
-    let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
-    esp_alloc::heap_allocator!(72 << 10);
+    esp_alloc::heap_allocator!(96 << 10);
 
-    let (rudo, systimer) = RudoPeripherals::init(peripherals);
+    let (rudo, systimer) = RudoPeripherals::init();
     let systimer = esp_hal::timer::systimer::SystemTimer::new(systimer);
     esp_hal_embassy::init(systimer.alarm0);
     info!("embassy is initialized");
@@ -255,11 +258,11 @@ async fn main(spawner: Spawner) {
         }
         Ok(rudo) => {
             info!("Boot finished.");
-            if let Err(e) = main_fallible(rudo, spawner).await {
-                STATUS_LED.signal(status::Status::Failure);
-                error!("The embedded system encountered an error: {e:?}");
-                error!("Can't continue");
-            }
+            spawner.must_spawn(update_screen(rudo));
+            let e = FATAL_ERROR.wait().await;
+            STATUS_LED.signal(status::Status::Failure);
+            error!("The embedded system encountered an error: {e:?}");
+            error!("Can't continue");
         }
     }
 
