@@ -213,10 +213,10 @@ async fn update_screen(mut rudo: Rudo) -> ! {
     loop {
         STATUS_LED.signal(status::Status::Working);
         info!("Fetching image.");
-        match client.fetch_image(buf).await {
+        let sleep_dur = match client.fetch_image(buf).await {
             Ok(img) => {
                 rudo.screen.clear();
-                embedded_graphics::image::Image::new(&img, Point::zero())
+                embedded_graphics::image::Image::new(&img.image, Point::zero())
                     .draw(&mut rudo.screen.display().color_converted())
                     .unwrap();
                 if let Err(e) = rudo.screen.update() {
@@ -225,6 +225,7 @@ async fn update_screen(mut rudo: Rudo) -> ! {
                     Timer::after_secs(2).await;
                     continue;
                 }
+                img.next_refresh
             }
             Err(e) => {
                 error!("Failed to fetch and display image: {e:?}");
@@ -232,9 +233,9 @@ async fn update_screen(mut rudo: Rudo) -> ! {
                 Timer::after_secs(25).await;
                 continue;
             }
-        }
+        };
         STATUS_LED.signal(status::Status::Sleeping);
-        Timer::after_secs(embed_config_value!("rudo.refresh_interval_secs") as u64).await
+        Timer::after(sleep_dur).await;
     }
 }
 
