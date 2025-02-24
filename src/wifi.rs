@@ -7,11 +7,11 @@ use esp_hal::{
     peripherals::{RADIO_CLK, WIFI},
 };
 use esp_wifi::{
+    EspWifiController, InitializationError as WifiInitializationError,
     wifi::{
         ClientConfiguration, Configuration, WifiController, WifiDevice, WifiError as EspWifiError,
         WifiEvent, WifiStaDevice, WifiState,
     },
-    EspWifiController, InitializationError as WifiInitializationError,
 };
 use heapless::String;
 use log::{debug, error, info};
@@ -19,7 +19,7 @@ use static_cell::StaticCell;
 
 static WIFI_CONTROLLER: StaticCell<EspWifiController<'static>> = StaticCell::new();
 
-static STACK_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+static STACK_RESOURCES: StaticCell<StackResources<8>> = StaticCell::new();
 
 pub static STOP_WIFI_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 

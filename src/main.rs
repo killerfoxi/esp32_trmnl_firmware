@@ -212,11 +212,21 @@ async fn update_screen(mut rudo: Rudo) -> ! {
     info!("Ready.");
     loop {
         STATUS_LED.signal(status::Status::Working);
-        info!("Fetching image.");
-        let sleep_dur = match client.fetch_image(buf).await {
+        info!("Fetching data for screen.");
+        let (image_url, sleep_dur) = match client.fetch_api_display(buf).await {
+            Ok(resp) => (resp.image_url, Duration::from_secs(resp.refresh_rate)),
+            Err(e) => {
+                error!("Failed to fetch from /api/display: {e:?}");
+                STATUS_LED.signal(status::Status::Failure);
+                Timer::after_secs(30).await;
+                continue;
+            }
+        };
+        info!("Got response. Continue to fetch image from: {}", image_url);
+        match client.fetch_image(buf, &image_url).await {
             Ok(img) => {
                 rudo.screen.clear();
-                embedded_graphics::image::Image::new(&img.image, Point::zero())
+                embedded_graphics::image::Image::new(&img, Point::zero())
                     .draw(&mut rudo.screen.display().color_converted())
                     .unwrap();
                 if let Err(e) = rudo.screen.update() {
@@ -225,7 +235,6 @@ async fn update_screen(mut rudo: Rudo) -> ! {
                     Timer::after_secs(2).await;
                     continue;
                 }
-                img.next_refresh
             }
             Err(e) => {
                 error!("Failed to fetch and display image: {e:?}");
@@ -233,7 +242,8 @@ async fn update_screen(mut rudo: Rudo) -> ! {
                 Timer::after_secs(25).await;
                 continue;
             }
-        };
+        }
+        info!("Going to sleep for: {} seconds", sleep_dur.as_secs());
         STATUS_LED.signal(status::Status::Sleeping);
         Timer::after(sleep_dur).await;
     }

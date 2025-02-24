@@ -39,14 +39,9 @@ impl From<serde_json_core::de::Error> for Error {
 }
 
 #[derive(Deserialize)]
-struct ApiResponse {
-    image_url: heapless::String<128>,
-    refresh_rate: u64,
-}
-
-pub struct FetchImage<'b> {
-    pub image: Qoi<'b>,
-    pub next_refresh: Duration,
+pub struct ApiResponse {
+    pub image_url: heapless::String<128>,
+    pub refresh_rate: u64,
 }
 
 macro_rules! url {
@@ -69,16 +64,12 @@ pub trait TrmnlClient: http::ClientTrait {
         Ok(api)
     }
 
-    async fn fetch_image<'b>(&mut self, buf: &'b mut [u8]) -> Result<FetchImage<'b>, Error> {
-        let api_resp = self.fetch_api_display(buf).await?;
+    async fn fetch_image<'b>(&mut self, buf: &'b mut [u8], url: &str) -> Result<Qoi<'b>, Error> {
         let resp = self
-            .send_request_with_header(buf, &api_resp.image_url, &[("Accept", "image/qoi")])
+            .send_request_with_header(buf, url, &[("Accept", "image/qoi")])
             .await
             .inspect_err(|e| debug!("Received error: {e:?}"))?;
-        Ok(FetchImage {
-            image: Qoi::new(resp).inspect_err(|e| debug!("Failed to create image: {e:?}"))?,
-            next_refresh: Duration::from_secs(api_resp.refresh_rate),
-        })
+        Ok(Qoi::new(resp).inspect_err(|e| debug!("Failed to create image: {e:?}"))?)
     }
 }
 

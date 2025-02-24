@@ -109,8 +109,10 @@ impl ClientTrait for Client<'_> {
         let mut req = client
             .request(Method::GET, url)
             .await
+            .inspect(|_| debug!("Request prepped."))
             .inspect_err(|e| error!("Producing request: {e:?}"))?
             .headers(headers);
+        debug!("Sending request");
         let resp = match req.send(buf).with_timeout(Duration::from_secs(45)).await {
             Ok(Ok(resp)) => resp,
             Ok(Err(e)) => {

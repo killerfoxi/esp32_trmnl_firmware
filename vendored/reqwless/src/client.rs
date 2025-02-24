@@ -1,10 +1,10 @@
-use crate::Error;
 /// Client using embedded-nal-async traits to establish connections and perform HTTP requests.
 ///
 use crate::body_writer::{BufferingChunkedBodyWriter, ChunkedBodyWriter, FixedBodyWriter};
 use crate::headers::ContentType;
 use crate::request::*;
 use crate::response::*;
+use crate::Error;
 use buffered_io::asynch::BufferedWrite;
 use core::net::SocketAddr;
 use embedded_io::Error as _;
@@ -122,11 +122,13 @@ where
             .await
             .map_err(|_| Error::Dns)?;
 
+        debug!("Connecting to: {remote}:{port}");
         let conn = self
             .client
             .connect(SocketAddr::new(remote, port))
             .await
             .map_err(|e| e.kind())?;
+        debug!("Got connected.");
 
         if url.scheme() == UrlScheme::HTTPS {
             #[cfg(feature = "esp-mbedtls")]
