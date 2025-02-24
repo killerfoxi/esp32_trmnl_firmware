@@ -1,6 +1,7 @@
 use embassy_time::Duration;
 use embedded_config::prelude::embed_config_value;
 use log::debug;
+use reqwless::response::StatusCode;
 use serde::Deserialize;
 use tinyqoi::Qoi;
 
@@ -9,13 +10,19 @@ use crate::http;
 #[derive(Debug)]
 pub enum Error {
     Fetch,
+    UnexpectedStatus(StatusCode),
     Image,
     Decode,
 }
 
 impl From<http::Error> for Error {
-    fn from(_: http::Error) -> Self {
-        Self::Fetch
+    fn from(err: http::Error) -> Self {
+        match err {
+            http::Error::ConnectionReset | http::Error::RequestTimedOut | http::Error::Http => {
+                Error::Fetch
+            }
+            http::Error::StatusCode(status_code) => Error::UnexpectedStatus(status_code),
+        }
     }
 }
 
