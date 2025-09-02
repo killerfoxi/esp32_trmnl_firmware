@@ -1,7 +1,7 @@
 fn main() {
     linker_be_nice();
     // make sure linkall.x is the last linker script (otherwise might cause problems with flip-link)
-    println!("cargo:rustc-link-arg=-Tlinkall.x");
+    //println!("cargo:rustc-link-arg=-Tlinkall.x");
 }
 
 fn linker_be_nice() {
@@ -14,7 +14,9 @@ fn linker_be_nice() {
             "undefined-symbol" => match what.as_str() {
                 "_defmt_timestamp" => {
                     eprintln!();
-                    eprintln!("💡 `defmt` not found - make sure `defmt.x` is added as a linker script and you have included `use defmt_rtt as _;`");
+                    eprintln!(
+                        "💡 `defmt` not found - make sure `defmt.x` is added as a linker script and you have included `use defmt_rtt as _;`"
+                    );
                     eprintln!();
                 }
                 "_stack_start" => {

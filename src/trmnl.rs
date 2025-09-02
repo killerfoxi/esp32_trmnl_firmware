@@ -1,4 +1,3 @@
-use embassy_time::Duration;
 use embedded_config::prelude::embed_config_value;
 use log::debug;
 use reqwless::response::StatusCode;

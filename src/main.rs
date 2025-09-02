@@ -17,16 +17,18 @@ use embassy_sync::signal::Signal;
 use embedded_config::prelude::*;
 use embedded_graphics::prelude::{DrawTargetExt, Point};
 use epaper::Display;
+use esp_hal::gpio::InputConfig;
+use esp_hal::gpio::OutputConfig;
 use esp_hal::gpio::{AnyPin, Input, Level, Output, Pin, Pull};
 use esp_hal::peripherals::{self, TIMG0};
 use esp_hal::rmt::{ChannelCreator, Rmt};
 use esp_hal::spi::master::Spi;
-use esp_hal::time::RateExtU32;
+use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
-use esp_hal::{Blocking, reset};
+use esp_hal::{Blocking, rom};
 use esp_hal::{clock::CpuClock, rng::Rng};
 
-use esp_hal_smartled::smartLedBuffer;
+use esp_hal_smartled::smart_led_buffer;
 use log::{error, info};
 
 use embassy_executor::Spawner;
@@ -82,19 +84,18 @@ struct DisplayPins {
 }
 
 struct RudoPeripherals {
-    spi: peripherals::SPI2,
-    rmt: peripherals::RMT,
-    timer0: TimerGroup<TIMG0>,
+    spi: peripherals::SPI2<'static>,
+    rmt: peripherals::RMT<'static>,
+    timer0: TimerGroup<'static, TIMG0<'static>>,
     rng: Rng,
-    wifi: peripherals::WIFI,
-    radio_clk: peripherals::RADIO_CLK,
-    status_led_pin: AnyPin,
+    wifi: peripherals::WIFI<'static>,
+    status_led_pin: AnyPin<'static>,
     spi_pins: SpiPins,
     display_pins: DisplayPins,
 }
 
 impl RudoPeripherals {
-    fn init() -> (Self, peripherals::SYSTIMER) {
+    fn init() -> (Self, peripherals::SYSTIMER<'static>) {
         let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
         (
             Self {
@@ -103,18 +104,20 @@ impl RudoPeripherals {
                 timer0: TimerGroup::new(peripherals.TIMG0),
                 rng: Rng::new(peripherals.RNG),
                 wifi: peripherals.WIFI,
-                radio_clk: peripherals.RADIO_CLK,
                 status_led_pin: peripherals.GPIO8.degrade(),
                 spi_pins: SpiPins {
-                    clock_pin: Output::new(peripherals.GPIO19, Level::Low),
-                    mosi_pin: Output::new(peripherals.GPIO20, Level::Low),
+                    clock_pin: Output::new(peripherals.GPIO19, Level::Low, OutputConfig::default()),
+                    mosi_pin: Output::new(peripherals.GPIO20, Level::Low, OutputConfig::default()),
                 },
                 display_pins: DisplayPins {
-                    cs: Output::new(peripherals.GPIO18, Level::Low),
-                    busy: Input::new(peripherals.GPIO23, Pull::Up),
-                    dc: Output::new(peripherals.GPIO21, Level::Low),
-                    rst: Output::new(peripherals.GPIO22, Level::High),
-                    pwr: Output::new(peripherals.GPIO10, Level::Low),
+                    cs: Output::new(peripherals.GPIO18, Level::Low, OutputConfig::default()),
+                    busy: Input::new(
+                        peripherals.GPIO23,
+                        InputConfig::default().with_pull(Pull::Up),
+                    ),
+                    dc: Output::new(peripherals.GPIO21, Level::Low, OutputConfig::default()),
+                    rst: Output::new(peripherals.GPIO22, Level::High, OutputConfig::default()),
+                    pwr: Output::new(peripherals.GPIO10, Level::Low, OutputConfig::default()),
                 },
             },
             peripherals.SYSTIMER,
@@ -123,7 +126,7 @@ impl RudoPeripherals {
 
     async fn boot(self, spawner: &Spawner) -> Result<Rudo, BootError> {
         // Setup the status LED for indication.
-        let rmt = Rmt::new(self.rmt, 80u32.MHz()).unwrap();
+        let rmt = Rmt::new(self.rmt, Rate::from_mhz(80)).unwrap();
         spawner.must_spawn(status_led_runner(rmt.channel0, self.status_led_pin));
         STATUS_LED.signal(status::Status::Booting);
 
@@ -133,7 +136,6 @@ impl RudoPeripherals {
             self.timer0.timer0,
             self.rng,
             self.wifi,
-            self.radio_clk,
             (WIFI_SSD, WIFI_PWD),
         )
         .with_timeout(Duration::from_secs(20))
@@ -145,7 +147,7 @@ impl RudoPeripherals {
         let spi = Spi::new(
             self.spi,
             esp_hal::spi::master::Config::default()
-                .with_frequency(8u32.MHz())
+                .with_frequency(Rate::from_mhz(8))
                 .with_mode(esp_hal::spi::Mode::_0),
         )
         .map_err(|_| BootError::SpiInit)?
@@ -188,9 +190,9 @@ struct Rudo {
 }
 
 #[embassy_executor::task]
-async fn status_led_runner(rmt_channel: ChannelCreator<Blocking, 0>, led_pin: AnyPin) {
+async fn status_led_runner(rmt_channel: ChannelCreator<Blocking, 0>, led_pin: AnyPin<'static>) {
     let mut status_led = status::Led::new(
-        esp_hal_smartled::SmartLedsAdapter::new(rmt_channel, led_pin, smartLedBuffer!(1)),
+        esp_hal_smartled::SmartLedsAdapter::new(rmt_channel, led_pin, smart_led_buffer!(1)),
         10,
     );
     loop {
@@ -253,7 +255,7 @@ async fn update_screen(mut rudo: Rudo) -> ! {
 async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
 
-    esp_alloc::heap_allocator!(96 << 10);
+    esp_alloc::heap_allocator!(size: 96 << 10);
 
     let (rudo, systimer) = RudoPeripherals::init();
     let systimer = esp_hal::timer::systimer::SystemTimer::new(systimer);
@@ -279,5 +281,5 @@ async fn main(spawner: Spawner) {
 
     info!("Reboot triggered.");
     Timer::after_secs(3).await;
-    reset::software_reset();
+    rom::software_reset();
 }

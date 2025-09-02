@@ -1,19 +1,18 @@
+use alloc::string::String;
 use embassy_executor::Spawner;
 use embassy_net::{Config, DhcpConfig, Runner, Stack, StackResources};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Timer};
-use esp_hal::{
-    peripheral::Peripheral,
-    peripherals::{RADIO_CLK, WIFI},
-};
+use esp_hal::peripherals::WIFI;
+use esp_wifi::EspWifiTimerSource;
 use esp_wifi::{
     EspWifiController, InitializationError as WifiInitializationError,
     wifi::{
         ClientConfiguration, Configuration, WifiController, WifiDevice, WifiError as EspWifiError,
-        WifiEvent, WifiStaDevice, WifiState,
+        WifiEvent, WifiState,
     },
 };
-use heapless::String;
+//use heapless::String;
 use log::{debug, error, info};
 use static_cell::StaticCell;
 
@@ -23,27 +22,25 @@ static STACK_RESOURCES: StaticCell<StackResources<8>> = StaticCell::new();
 
 pub static STOP_WIFI_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-pub async fn connect<T: esp_wifi::EspWifiTimerSource>(
+pub async fn connect(
     spawner: &Spawner,
-    timer: impl Peripheral<P = T> + 'static,
-    mut rng: impl esp_wifi::EspWifiRngSource,
-    wifi: WIFI,
-    radio_clock_control: impl Peripheral<P = RADIO_CLK> + 'static,
+    timer: impl EspWifiTimerSource + 'static,
+    mut rng: impl esp_wifi::EspWifiRngSource + 'static,
+    wifi: WIFI<'static>,
     (ssid, password): (&str, &str),
 ) -> Result<Stack<'static>, Error> {
     let seed = rng.next_u64();
 
-    let init: &'static _ = WIFI_CONTROLLER.init(esp_wifi::init(timer, rng, radio_clock_control)?);
+    let init: &'static _ = WIFI_CONTROLLER.init(esp_wifi::init(timer, rng)?);
 
-    let (wifi_interface, mut controller) =
-        esp_wifi::wifi::new_with_mode(init, wifi, WifiStaDevice)?;
+    let (mut controller, wifi_interfaces) = esp_wifi::wifi::new(init, wifi)?;
     let _ = controller.set_power_saving(esp_wifi::config::PowerSaveMode::None);
 
     let config = Config::dhcpv4(DhcpConfig::default());
 
     debug!("Initialize network stack");
     let stack_resources: &'static mut _ = STACK_RESOURCES.init(StackResources::new());
-    let (stack, runner) = embassy_net::new(wifi_interface, config, stack_resources, seed);
+    let (stack, runner) = embassy_net::new(wifi_interfaces.sta, config, stack_resources, seed);
 
     spawner.must_spawn(connection(
         controller,
@@ -76,7 +73,7 @@ pub async fn connect<T: esp_wifi::EspWifiTimerSource>(
 }
 
 #[embassy_executor::task]
-async fn connection(controller: WifiController<'static>, ssid: String<32>, password: String<64>) {
+async fn connection(controller: WifiController<'static>, ssid: String, password: String) {
     if let Err(error) = connection_fallible(controller, ssid, password).await {
         error!("Cannot connect to WiFi: {error:?}");
     }
@@ -84,11 +81,17 @@ async fn connection(controller: WifiController<'static>, ssid: String<32>, passw
 
 async fn connection_fallible(
     mut controller: WifiController<'static>,
-    ssid: String<32>,
-    password: String<64>,
+    ssid: String,
+    password: String,
 ) -> Result<(), Error> {
     debug!("Start connection");
     debug!("Device capabilities: {:?}", controller.capabilities());
+    let client_config = Configuration::Client(ClientConfiguration {
+        ssid,
+        password,
+        //auth_method: AuthMethod::WPA2WPA3Personal,
+        ..Default::default()
+    });
     loop {
         if esp_wifi::wifi::wifi_state() == WifiState::StaConnected {
             // wait until we're no longer connected
@@ -97,12 +100,6 @@ async fn connection_fallible(
         }
 
         if !matches!(controller.is_started(), Ok(true)) {
-            let client_config = Configuration::Client(ClientConfiguration {
-                ssid: ssid.clone(),
-                password: password.clone(),
-                //auth_method: AuthMethod::WPA2WPA3Personal,
-                ..Default::default()
-            });
             controller.set_configuration(&client_config)?;
             debug!("Starting WiFi controller");
             controller.start_async().await?;
@@ -133,7 +130,7 @@ async fn connection_fallible(
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, WifiDevice<'static, WifiStaDevice>>) {
+async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     runner.run().await
 }
 
