@@ -39,6 +39,8 @@ use static_cell::ConstStaticCell;
 
 extern crate alloc;
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 const WIFI_SSD: &str = embed_config_value!("wifi.ssid");
 const WIFI_PWD: &str = embed_config_value!("wifi.password");
 
