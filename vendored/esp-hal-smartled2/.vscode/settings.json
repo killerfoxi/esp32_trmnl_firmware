@@ -1,0 +1,11 @@
+{
+	"rust-analyzer.cargo.allTargets": false,
+	"rust-analyzer.cargo.extraArgs": [
+		"--target=riscv32imac-unknown-none-elf"
+	],
+	"rust-analyzer.cargo.features": [
+		"defmt",
+		"esp-hal/unstable",
+		"esp32c6",
+	]
+}

@@ -9,7 +9,7 @@ use crate::http;
 #[derive(Debug)]
 pub enum Error {
     Fetch,
-    UnexpectedStatus(StatusCode),
+    UnexpectedStatus(#[allow(dead_code)] StatusCode),
     Image,
     Decode,
 }

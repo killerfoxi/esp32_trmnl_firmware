@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_assoc_type)]
 #![warn(tail_expr_drop_order)]
 #![warn(clippy::large_futures)]
@@ -19,16 +18,16 @@ use embedded_graphics::prelude::{DrawTargetExt, Point};
 use epaper::Display;
 use esp_hal::gpio::InputConfig;
 use esp_hal::gpio::OutputConfig;
-use esp_hal::gpio::{AnyPin, Input, Level, Output, Pin, Pull};
+use esp_hal::gpio::{AnyPin, Input, Level, Output, Pin as _, Pull};
+use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::peripherals::{self, TIMG0};
-use esp_hal::rmt::{ChannelCreator, Rmt};
+use esp_hal::rmt::Rmt;
 use esp_hal::spi::master::Spi;
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::{Blocking, rom};
 use esp_hal::{clock::CpuClock, rng::Rng};
 
-use esp_hal_smartled::smart_led_buffer;
 use log::{error, info};
 
 use embassy_executor::Spawner;
@@ -88,8 +87,6 @@ struct DisplayPins {
 struct RudoPeripherals {
     spi: peripherals::SPI2<'static>,
     rmt: peripherals::RMT<'static>,
-    timer0: TimerGroup<'static, TIMG0<'static>>,
-    rng: Rng,
     wifi: peripherals::WIFI<'static>,
     status_led_pin: AnyPin<'static>,
     spi_pins: SpiPins,
@@ -97,14 +94,14 @@ struct RudoPeripherals {
 }
 
 impl RudoPeripherals {
-    fn init() -> (Self, peripherals::SYSTIMER<'static>) {
+    fn init() -> (TimerGroup<'static, TIMG0<'static>>, peripherals::SW_INTERRUPT<'static>, Self) {
         let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
         (
+            TimerGroup::new(peripherals.TIMG0),
+            peripherals.SW_INTERRUPT,
             Self {
                 spi: peripherals.SPI2,
                 rmt: peripherals.RMT,
-                timer0: TimerGroup::new(peripherals.TIMG0),
-                rng: Rng::new(peripherals.RNG),
                 wifi: peripherals.WIFI,
                 status_led_pin: peripherals.GPIO8.degrade(),
                 spi_pins: SpiPins {
@@ -122,22 +119,27 @@ impl RudoPeripherals {
                     pwr: Output::new(peripherals.GPIO10, Level::Low, OutputConfig::default()),
                 },
             },
-            peripherals.SYSTIMER,
         )
     }
 
     async fn boot(self, spawner: &Spawner) -> Result<Rudo, BootError> {
         // Setup the status LED for indication.
         let rmt = Rmt::new(self.rmt, Rate::from_mhz(80)).unwrap();
-        spawner.must_spawn(status_led_runner(rmt.channel0, self.status_led_pin));
+        let led = esp_hal_smartled2::Ws2812SmartLeds::<
+            { esp_hal_smartled2::buffer_size::<smart_leds::RGB8>(1) },
+            Blocking,
+        >::new(rmt.channel0, self.status_led_pin)
+        .unwrap();
+        spawner.spawn(status_led_runner(led).unwrap());
         STATUS_LED.signal(status::Status::Booting);
+
+        let seed = (Rng::new().random() as u64) << 32 | Rng::new().random() as u64;
 
         info!("Connecting to wifi");
         let stack = wifi::connect(
             spawner,
-            self.timer0.timer0,
-            self.rng,
             self.wifi,
+            seed,
             (WIFI_SSD, WIFI_PWD),
         )
         .with_timeout(Duration::from_secs(20))
@@ -172,7 +174,6 @@ impl RudoPeripherals {
         Ok(Rudo {
             screen,
             stack,
-            rng: self.rng,
         })
     }
 }
@@ -188,21 +189,19 @@ struct Rudo {
         Delay,
     >,
     stack: Stack<'static>,
-    rng: Rng,
 }
 
+static IMG_BUF: ConstStaticCell<[u8; 56 << 10]> = ConstStaticCell::new([0; 56 << 10]);
+
 #[embassy_executor::task]
-async fn status_led_runner(rmt_channel: ChannelCreator<Blocking, 0>, led_pin: AnyPin<'static>) {
-    let mut status_led = status::Led::new(
-        esp_hal_smartled::SmartLedsAdapter::new(rmt_channel, led_pin, smart_led_buffer!(1)),
-        10,
-    );
+async fn status_led_runner(
+    led: esp_hal_smartled2::Ws2812SmartLeds<'static, { esp_hal_smartled2::buffer_size::<smart_leds::RGB8>(1) }, Blocking>,
+) {
+    let mut status_led = status::Led::new(led, 10);
     loop {
         status_led.set_status(STATUS_LED.wait().await);
     }
 }
-
-static IMG_BUF: ConstStaticCell<[u8; 56 << 10]> = ConstStaticCell::new([0; 56 << 10]);
 
 #[embassy_executor::task]
 async fn update_screen(mut rudo: Rudo) -> ! {
@@ -210,7 +209,7 @@ async fn update_screen(mut rudo: Rudo) -> ! {
     use embedded_graphics::Drawable;
     STATUS_LED.signal(status::Status::Working);
 
-    let mut client = http::Client::new(rudo.stack, rudo.rng);
+    let mut client = http::Client::new(rudo.stack);
     let buf = IMG_BUF.take();
 
     info!("Ready.");
@@ -253,16 +252,16 @@ async fn update_screen(mut rudo: Rudo) -> ! {
     }
 }
 
-#[esp_hal_embassy::main]
+#[esp_rtos::main]
 async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
 
     esp_alloc::heap_allocator!(size: 96 << 10);
 
-    let (rudo, systimer) = RudoPeripherals::init();
-    let systimer = esp_hal::timer::systimer::SystemTimer::new(systimer);
-    esp_hal_embassy::init(systimer.alarm0);
-    info!("embassy is initialized");
+    let (timer0, sw_interrupt, rudo) = RudoPeripherals::init();
+    let sw_int = SoftwareInterruptControl::new(sw_interrupt);
+    esp_rtos::start(timer0.timer0, sw_int.software_interrupt0);
+    info!("RTOS is initialized");
 
     info!("Booting...");
     match rudo.boot(&spawner).await {
@@ -273,7 +272,7 @@ async fn main(spawner: Spawner) {
         }
         Ok(rudo) => {
             info!("Boot finished.");
-            spawner.must_spawn(update_screen(rudo));
+            spawner.spawn(update_screen(rudo).unwrap());
             let e = FATAL_ERROR.wait().await;
             STATUS_LED.signal(status::Status::Failure);
             error!("The embedded system encountered an error: {e:?}");

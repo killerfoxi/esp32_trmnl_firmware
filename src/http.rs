@@ -11,7 +11,6 @@ use embassy_net::{
 use embassy_time::{Duration, WithTimeout};
 use esp_hal::rng::Rng;
 use log::{debug, error};
-use rand_core::RngCore;
 use reqwless::{
     client::{HttpClient, TlsConfig, TlsVerify},
     request::{Method, RequestBuilder},
@@ -66,17 +65,15 @@ pub trait ClientTrait {
 
 pub struct Client<'stack> {
     stack: Stack<'stack>,
-    rng: Rng,
     tcp_client_state: TcpClientState<1, 4096, 4096>,
     rx_buf: [u8; 18 << 10],
     tx_buf: [u8; 18 << 10],
 }
 
 impl<'stack> Client<'stack> {
-    pub fn new(stack: Stack<'stack>, rng: Rng) -> Self {
+    pub fn new(stack: Stack<'stack>) -> Self {
         Self {
             stack,
-            rng,
             tcp_client_state: TcpClientState::new(),
             rx_buf: [0; 18 << 10],
             tx_buf: [0; 18 << 10],
@@ -93,8 +90,9 @@ impl ClientTrait for Client<'_> {
     ) -> Result<&'buf [u8], Error> {
         debug!("Sending http request to {url}");
 
+        let seed = (Rng::new().random() as u64) << 32 | Rng::new().random() as u64;
         let tls_config = TlsConfig::new(
-            self.rng.next_u64(),
+            seed,
             &mut self.rx_buf,
             &mut self.tx_buf,
             TlsVerify::None,
