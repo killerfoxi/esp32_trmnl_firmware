@@ -1,7 +1,6 @@
 use alloc::string::String;
 use embassy_executor::Spawner;
 use embassy_net::{Runner, Stack, StackResources};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Timer};
 use esp_hal::peripherals::WIFI;
 use esp_radio::wifi::{
@@ -10,9 +9,7 @@ use esp_radio::wifi::{
 use log::{debug, error, info};
 use static_cell::StaticCell;
 
-static STACK_RESOURCES: StaticCell<StackResources<8>> = StaticCell::new();
-
-pub static STOP_WIFI_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static STACK_RESOURCES: StaticCell<StackResources<2>> = StaticCell::new();
 
 pub async fn connect(
     spawner: &Spawner,
@@ -28,11 +25,9 @@ pub async fn connect(
     let stack_resources: &'static mut _ = STACK_RESOURCES.init(StackResources::new());
     let (stack, runner) = embassy_net::new(interfaces.station, config, stack_resources, seed);
 
-    spawner.spawn(connection(
-        controller,
-        ssid.try_into().unwrap(),
-        password.try_into().unwrap(),
-    ).unwrap());
+    let ssid: String = ssid.into();
+    let password: String = password.into();
+    spawner.spawn(connection(controller, ssid, password).unwrap());
     spawner.spawn(net_task(runner).unwrap());
 
     debug!("Wait for network link");
@@ -71,7 +66,6 @@ async fn connection_fallible(
     password: String,
 ) -> Result<(), Error> {
     debug!("Start connection");
-    // debug!("Device capabilities: {:?}", controller.capabilities());
     let client_config = wifi::Config::Station(
         wifi::sta::StationConfig::default()
             .with_ssid(ssid)
@@ -81,7 +75,7 @@ async fn connection_fallible(
 
     loop {
         if controller.is_connected() {
-            // wait until we're no longer connected
+            // Wait until we're no longer connected
             let mut subscriber = controller.subscribe()?;
             loop {
                 match subscriber.next_event().await {
@@ -91,29 +85,20 @@ async fn connection_fallible(
                     _ => {}
                 }
             }
-            Timer::after(Duration::from_millis(5000)).await;
+            debug!("Disconnected, reconnecting...");
         }
 
         debug!("Connect to WiFi network");
         match controller.connect_async().await {
             Ok(ConnectedStationInfo { .. }) => {
                 debug!("Connected to WiFi network");
-
-                debug!("Wait for request to stop wifi");
-                STOP_WIFI_SIGNAL.wait().await;
-                info!("Received signal to stop wifi");
-                controller.disconnect_async().await?;
-                break;
             }
             Err(error) => {
                 error!("Failed to connect to WiFi network: {error:?}");
-                Timer::after(Duration::from_millis(5000)).await;
+                Timer::after(Duration::from_secs(5)).await;
             }
         }
     }
-
-    info!("Leave connection task");
-    Ok(())
 }
 
 #[embassy_executor::task]
@@ -123,13 +108,12 @@ async fn net_task(mut runner: Runner<'static, esp_radio::wifi::Interface<'static
 
 #[derive(Debug)]
 pub enum Error {
-    #[allow(dead_code)]
-    Setup,
     Operation,
 }
 
 impl From<WifiError> for Error {
-    fn from(_: WifiError) -> Self {
+    fn from(e: WifiError) -> Self {
+        debug!("Discarding WiFi error details: {e:?}");
         Self::Operation
     }
 }

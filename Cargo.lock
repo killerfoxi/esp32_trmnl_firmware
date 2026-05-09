@@ -1292,7 +1292,6 @@ dependencies = [
 name = "esp32_trmnl_firmware"
 version = "0.1.0"
 dependencies = [
- "critical-section",
  "der 0.8.0",
  "embassy-executor",
  "embassy-net",
@@ -1302,7 +1301,6 @@ dependencies = [
  "embedded-graphics",
  "embedded-hal 1.0.0",
  "embedded-hal-bus",
- "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
  "epd-waveshare",
  "esp-alloc",
@@ -1315,7 +1313,6 @@ dependencies = [
  "esp-rtos",
  "heapless 0.9.3",
  "log",
- "rand_core 0.10.1",
  "reqwless",
  "serde",
  "serde-json-core",

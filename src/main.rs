@@ -7,7 +7,6 @@
 mod epaper;
 mod http;
 mod status;
-mod trmnl;
 mod wifi;
 
 use embassy_net::Stack;
@@ -15,7 +14,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embedded_config::prelude::*;
 use embedded_graphics::prelude::{DrawTargetExt, Point};
-use epaper::Display;
+
+
 use esp_hal::gpio::InputConfig;
 use esp_hal::gpio::OutputConfig;
 use esp_hal::gpio::{AnyPin, Input, Level, Output, Pin as _, Pull};
@@ -23,12 +23,11 @@ use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::peripherals::{self, TIMG0};
 use esp_hal::rmt::Rmt;
 use esp_hal::spi::master::Spi;
-use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::{Blocking, rom};
 use esp_hal::{clock::CpuClock, rng::Rng};
 
-use log::{error, info};
+use log::{debug, error, info};
 
 use embassy_executor::Spawner;
 use embassy_time::{Delay, Duration, Timer, WithTimeout};
@@ -40,22 +39,23 @@ extern crate alloc;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-const WIFI_SSD: &str = embed_config_value!("wifi.ssid");
+const WIFI_SSID: &str = embed_config_value!("wifi.ssid");
 const WIFI_PWD: &str = embed_config_value!("wifi.password");
 
+const MIN_RETRY_SECS: u64 = 15;
+const MAX_RETRY_SECS: u64 = 300;
+
 static STATUS_LED: Signal<CriticalSectionRawMutex, status::Status> = Signal::new();
-static FATAL_ERROR: Signal<CriticalSectionRawMutex, Error> = Signal::new();
 
-#[derive(Debug)]
-enum Error {
-    Boot,
-}
-
-impl From<BootError> for Error {
-    fn from(_: BootError) -> Self {
-        Error::Boot
-    }
-}
+type ConcreteScreen = epaper::Screen<
+    Spi<'static, Blocking>,
+    Output<'static>,
+    Input<'static>,
+    Output<'static>,
+    Output<'static>,
+    Output<'static>,
+    Delay,
+>;
 
 #[derive(Debug)]
 enum BootError {
@@ -63,6 +63,17 @@ enum BootError {
     WifiConnectionTimeout,
     SpiInit,
     ScreenInit,
+}
+
+impl core::fmt::Display for BootError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BootError::WifiConnection => write!(f, "wifi connection failed"),
+            BootError::WifiConnectionTimeout => write!(f, "wifi connection timed out"),
+            BootError::SpiInit => write!(f, "spi initialization failed"),
+            BootError::ScreenInit => write!(f, "screen initialization failed"),
+        }
+    }
 }
 
 impl From<embassy_time::TimeoutError> for BootError {
@@ -124,7 +135,7 @@ impl RudoPeripherals {
 
     async fn boot(self, spawner: &Spawner) -> Result<Rudo, BootError> {
         // Setup the status LED for indication.
-        let rmt = Rmt::new(self.rmt, Rate::from_mhz(80)).unwrap();
+        let rmt = Rmt::new(self.rmt, esp_hal::time::Rate::from_mhz(80)).unwrap();
         let led = esp_hal_smartled2::Ws2812SmartLeds::<
             { esp_hal_smartled2::buffer_size::<smart_leds::RGB8>(1) },
             Blocking,
@@ -133,14 +144,15 @@ impl RudoPeripherals {
         spawner.spawn(status_led_runner(led).unwrap());
         STATUS_LED.signal(status::Status::Booting);
 
-        let seed = (Rng::new().random() as u64) << 32 | Rng::new().random() as u64;
+        let rng = Rng::new();
+        let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
         info!("Connecting to wifi");
         let stack = wifi::connect(
             spawner,
             self.wifi,
             seed,
-            (WIFI_SSD, WIFI_PWD),
+            (WIFI_SSID, WIFI_PWD),
         )
         .with_timeout(Duration::from_secs(20))
         .await?
@@ -151,9 +163,10 @@ impl RudoPeripherals {
         let spi = Spi::new(
             self.spi,
             esp_hal::spi::master::Config::default()
-                .with_frequency(Rate::from_mhz(8))
+                .with_frequency(esp_hal::time::Rate::from_mhz(8))
                 .with_mode(esp_hal::spi::Mode::_0),
         )
+        .inspect_err(|e| debug!("SPI init error: {e:?}"))
         .map_err(|_| BootError::SpiInit)?
         .with_sck(self.spi_pins.clock_pin)
         .with_mosi(self.spi_pins.mosi_pin);
@@ -168,6 +181,7 @@ impl RudoPeripherals {
             cs: cs_pin,
         } = self.display_pins;
         let screen = epaper::Screen::init(spi, cs_pin, busy_pin, dc_pin, rst_pin, pwr_pin, Delay)
+            .inspect_err(|e| debug!("Screen init error: {e:?}"))
             .map_err(|_| BootError::ScreenInit)?;
         info!("e-paper screen initialized.");
 
@@ -179,15 +193,7 @@ impl RudoPeripherals {
 }
 
 struct Rudo {
-    screen: epaper::Screen<
-        Spi<'static, Blocking>,
-        Output<'static>,
-        Input<'static>,
-        Output<'static>,
-        Output<'static>,
-        Output<'static>,
-        Delay,
-    >,
+    screen: ConcreteScreen,
     stack: Stack<'static>,
 }
 
@@ -205,12 +211,12 @@ async fn status_led_runner(
 
 #[embassy_executor::task]
 async fn update_screen(mut rudo: Rudo) -> ! {
-    use crate::trmnl::TrmnlClient;
     use embedded_graphics::Drawable;
     STATUS_LED.signal(status::Status::Working);
 
     let mut client = http::Client::new(rudo.stack);
     let buf = IMG_BUF.take();
+    let mut retry_secs = MIN_RETRY_SECS;
 
     info!("Ready.");
     loop {
@@ -221,7 +227,8 @@ async fn update_screen(mut rudo: Rudo) -> ! {
             Err(e) => {
                 error!("Failed to fetch from /api/display: {e:?}");
                 STATUS_LED.signal(status::Status::Failure);
-                Timer::after_secs(30).await;
+                Timer::after_secs(retry_secs).await;
+                retry_secs = (retry_secs * 2).min(MAX_RETRY_SECS);
                 continue;
             }
         };
@@ -235,17 +242,20 @@ async fn update_screen(mut rudo: Rudo) -> ! {
                 if let Err(e) = rudo.screen.update() {
                     error!("Display update failed: {e:?}");
                     STATUS_LED.signal(status::Status::Failure);
-                    Timer::after_secs(2).await;
+                    Timer::after_secs(retry_secs).await;
+                    retry_secs = (retry_secs * 2).min(MAX_RETRY_SECS);
                     continue;
                 }
             }
             Err(e) => {
                 error!("Failed to fetch and display image: {e:?}");
                 STATUS_LED.signal(status::Status::Failure);
-                Timer::after_secs(25).await;
+                Timer::after_secs(retry_secs).await;
+                retry_secs = (retry_secs * 2).min(MAX_RETRY_SECS);
                 continue;
             }
         }
+        retry_secs = MIN_RETRY_SECS;
         info!("Going to sleep for: {} seconds", sleep_dur.as_secs());
         STATUS_LED.signal(status::Status::Sleeping);
         Timer::after(sleep_dur).await;
@@ -258,29 +268,26 @@ async fn main(spawner: Spawner) {
 
     esp_alloc::heap_allocator!(size: 96 << 10);
 
-    let (timer0, sw_interrupt, rudo) = RudoPeripherals::init();
+    let (timg0, sw_interrupt, rudo) = RudoPeripherals::init();
     let sw_int = SoftwareInterruptControl::new(sw_interrupt);
-    esp_rtos::start(timer0.timer0, sw_int.software_interrupt0);
+    esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
     info!("RTOS is initialized");
 
     info!("Booting...");
     match rudo.boot(&spawner).await {
-        Err(e) => {
-            STATUS_LED.signal(status::Status::BootFailure);
-            error!("Boot failed: {e:?}");
-            error!("Can't continue");
-        }
         Ok(rudo) => {
             info!("Boot finished.");
             spawner.spawn(update_screen(rudo).unwrap());
-            let e = FATAL_ERROR.wait().await;
-            STATUS_LED.signal(status::Status::Failure);
-            error!("The embedded system encountered an error: {e:?}");
+            // update_screen runs forever; main has nothing else to do.
+            core::future::pending::<()>().await;
+        }
+        Err(e) => {
+            STATUS_LED.signal(status::Status::BootFailure);
+            error!("Boot failed: {e}");
             error!("Can't continue");
+            info!("Reboot triggered.");
+            Timer::after_secs(3).await;
+            rom::software_reset();
         }
     }
-
-    info!("Reboot triggered.");
-    Timer::after_secs(3).await;
-    rom::software_reset();
 }

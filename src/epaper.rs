@@ -1,6 +1,5 @@
-use core::convert::Infallible;
-
-use embedded_graphics::{pixelcolor::BinaryColor, prelude::DrawTarget};
+use embedded_graphics::draw_target::DrawTarget;
+use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_hal::{
     delay::DelayNs,
     digital::{InputPin, OutputPin},
@@ -19,6 +18,7 @@ pub enum Error {
     Pin,
     InitScreen,
     WakeUp,
+    #[allow(dead_code)]
     Sleep,
     BecomingReady,
     UpdateScreen,
@@ -78,27 +78,9 @@ where
             buffer: FRAMEBUFFER.init_with(Display7in5::default),
         })
     }
-}
 
-impl<SPI, CS, BUSY, DC, RST, PWR, DELAY> Display for Screen<SPI, CS, BUSY, DC, RST, PWR, DELAY>
-where
-    SPI: SpiBus,
-    CS: OutputPin,
-    BUSY: InputPin,
-    DC: OutputPin,
-    RST: OutputPin,
-    PWR: OutputPin,
-    DELAY: DelayNs + Clone,
-{
-    type Error = Error;
-    type Color = epd_waveshare::color::Color;
-
-    fn clear(&mut self) {
-        self.buffer.clear(BinaryColor::On.into()).unwrap();
-    }
-
-    fn update(&mut self) -> Result<(), Self::Error> {
-        self.pwr_pin.set_high().map_err(|_| Error::Pin)?;
+    /// Wake the display, wait for it to become ready, and send the framebuffer content.
+    fn wake_and_display(&mut self) -> Result<(), Error> {
         self.device
             .wake_up(&mut self.spi_device, &mut self.delay)
             .map_err(|_| Error::WakeUp)?;
@@ -109,24 +91,29 @@ where
         info!("Display reporting ready... updating the content.");
         self.device
             .update_and_display_frame(&mut self.spi_device, self.buffer.buffer(), &mut self.delay)
-            .map_err(|_| Error::UpdateScreen)?;
-        info!("Putting screen back to sleep.");
-        self.device
-            .sleep(&mut self.spi_device, &mut self.delay)
-            .map_err(|_| Error::Sleep)?;
-        self.pwr_pin.set_low().map_err(|_| Error::Pin)
+            .map_err(|_| Error::UpdateScreen)
     }
 
-    fn display(&mut self) -> &mut impl DrawTarget<Color = Self::Color, Error = Infallible> {
+    // Safe to unwrap: Display7in5::clear() just fills an in-memory buffer and cannot fail.
+    pub fn clear(&mut self) {
+        self.buffer.clear(BinaryColor::On.into()).unwrap();
+    }
+
+    pub fn update(&mut self) -> Result<(), Error> {
+        self.pwr_pin.set_high().map_err(|_| Error::Pin)?;
+
+        let result = self.wake_and_display();
+
+        // Always attempt to sleep the display and power down, even on error,
+        // to avoid leaving the e-paper panel in an active power state.
+        info!("Putting screen back to sleep.");
+        let _ = self.device.sleep(&mut self.spi_device, &mut self.delay);
+        let _ = self.pwr_pin.set_low();
+
+        result
+    }
+
+    pub fn display(&mut self) -> &mut Display7in5 {
         self.buffer
     }
-}
-
-pub trait Display {
-    type Error;
-    type Color;
-
-    fn clear(&mut self);
-    fn update(&mut self) -> Result<(), Self::Error>;
-    fn display(&mut self) -> &mut impl DrawTarget<Color = Self::Color, Error = Infallible>;
 }
