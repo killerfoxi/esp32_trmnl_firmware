@@ -86,7 +86,7 @@ flowchart LR
         LED[GPIO8]
     end
 
-    subgraph DISP['Waveshare 7.5" V2 HAT']
+    subgraph DISP["Waveshare 7.5 V2 HAT"]
         GND2[GND]
         VCC2[VCC]
         D_CLK[CLK]
