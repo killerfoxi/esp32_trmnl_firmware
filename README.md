@@ -69,6 +69,56 @@ Connect the Waveshare 7.5" V2 HAT (or bare panel with driver board) to the ESP32
                               └───────────────────────────────┘
 ```
 
+### Mermaid Diagram
+
+```mermaid
+flowchart LR
+    subgraph ESP["ESP32-C6 DevKit"]
+        GND1[GND]
+        VCC1[3V3]
+        SCK[GPIO19]
+        MOSI[GPIO20]
+        CS[GPIO18]
+        DC[GPIO21]
+        RST[GPIO22]
+        BUSY[GPIO23]
+        PWR[GPIO10]
+        LED[GPIO8]
+    end
+
+    subgraph DISP["Waveshare 7.5\" V2 HAT"]
+        GND2[GND]
+        VCC2[VCC]
+        D_CLK[CLK]
+        D_DIN[DIN]
+        D_CS[CS]
+        D_DC[DC]
+        D_RST[RST]
+        D_BUSY[BUSY]
+    end
+
+    subgraph PERIPH["Peripherals"]
+        WS["WS2812B LED"]
+        MOSFET["P-Ch MOSFET<br/>(high-side switch)"]
+    end
+
+    SCK  --> D_CLK
+    MOSI --> D_DIN
+    CS   --> D_CS
+    DC   --> D_DC
+    RST  --> D_RST
+    D_BUSY --> BUSY
+
+    VCC1 --> MOSFET
+    PWR  --> MOSFET
+    MOSFET --> VCC2
+
+    GND1 --- GND2
+    GND1 --- WS
+
+    LED --> WS
+```
+
 ### Pin Mapping
 
 | Function | ESP32-C6 GPIO | E-Paper HAT | Direction |
